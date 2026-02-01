@@ -10,7 +10,7 @@ const corsHeaders = {
 interface StalkerRequest {
   portalUrl: string;
   macAddress: string;
-  sessionId?: string; // now optional
+  sessionId?: string; // optional now
 }
 
 interface Channel {
@@ -48,7 +48,7 @@ Deno.serve(async (req: Request) => {
       }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    // If no sessionId provided, generate one automatically
+    // Generate sessionId if not provided
     const effectiveSessionId = sessionId || crypto.randomUUID();
 
     const cleanUrl = portalUrl.trim().replace(/\/+$/, '');
@@ -57,18 +57,20 @@ Deno.serve(async (req: Request) => {
 
     const token = await handshake(cleanUrl, formattedMac);
 
-    const channelsData = await getChannelsRaw(cleanUrl, formattedMac, token);
-    const moviesData = await getVODRaw(cleanUrl, formattedMac, token, 'movies');
-    const seriesData = await getVODRaw(cleanUrl, formattedMac, token, 'series');
+    // --- Capture raw responses ---
+    const channelsRaw = await getChannelsRaw(cleanUrl, formattedMac, token);
+    const moviesRaw   = await getVODRaw(cleanUrl, formattedMac, token, 'movies');
+    const seriesRaw   = await getVODRaw(cleanUrl, formattedMac, token, 'series');
 
-    const channels = parseChannels(channelsData);
-    const movies = parseVOD(moviesData, 'movies');
-    const series = parseVOD(seriesData, 'series');
+    // --- Parse responses ---
+    const channels = parseChannels(channelsRaw);
+    const movies   = parseVOD(moviesRaw, 'movies');
+    const series   = parseVOD(seriesRaw, 'series');
 
-    // Store in Supabase
+    // Store parsed data in Supabase
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    await supabase.from('conversions').upsert({
+    await supabase.from('conversions').insert({
       user_session_id: effectiveSessionId,
       portal_url: portalUrl,
       mac_address: macAddress,
@@ -80,6 +82,7 @@ Deno.serve(async (req: Request) => {
       series_count: series.length,
     });
 
+    // Return both parsed counts and raw JSON
     return new Response(JSON.stringify({
       success: true,
       sessionId: effectiveSessionId,
@@ -87,6 +90,11 @@ Deno.serve(async (req: Request) => {
       movieCount: movies.length,
       seriesCount: series.length,
       totalCount: channels.length + movies.length + series.length,
+      rawResponses: {
+        live: channelsRaw,
+        vodMovies: moviesRaw,
+        vodSeries: seriesRaw
+      }
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
   } catch (error) {
@@ -97,6 +105,7 @@ Deno.serve(async (req: Request) => {
     }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
 });
+
 
       
 
