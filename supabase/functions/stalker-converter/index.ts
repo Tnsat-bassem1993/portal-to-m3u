@@ -10,7 +10,7 @@ const corsHeaders = {
 interface StalkerRequest {
   portalUrl: string;
   macAddress: string;
-  sessionId?: string; // optional now
+  sessionId?: string;
 }
 
 interface Channel {
@@ -40,98 +40,84 @@ Deno.serve(async (req: Request) => {
 
   try {
     const { portalUrl, macAddress, sessionId }: StalkerRequest = await req.json();
-
     if (!portalUrl || !macAddress) {
-      return new Response(JSON.stringify({
-        success: false,
-        error: "Portal URL and MAC address are required",
-      }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ success: false, error: "Portal URL and MAC address are required" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
-    // Generate sessionId if not provided
     const effectiveSessionId = sessionId || crypto.randomUUID();
-
     const cleanUrl = portalUrl.trim().replace(/\/+$/, '');
     const cleanMac = macAddress.toUpperCase().replace(/[:-]/g, '');
     const formattedMac = cleanMac.match(/.{1,2}/g)?.join(':') || macAddress;
 
     const token = await handshake(cleanUrl, formattedMac);
 
-    // --- Capture raw responses ---
+    // Raw JSON responses
     const channelsRaw = await getChannelsRaw(cleanUrl, formattedMac, token);
-    const moviesRaw   = await getVODRaw(cleanUrl, formattedMac, token, 'movies');
-    const seriesRaw   = await getVODRaw(cleanUrl, formattedMac, token, 'series');
+    const moviesRaw   = await getVODOrderedList(cleanUrl, formattedMac, token, 'vod');
+    const seriesRaw   = await getVODOrderedList(cleanUrl, formattedMac, token, 'series');
 
-    // --- Parse responses ---
+    // Parse into arrays
     const channels = parseChannels(channelsRaw);
-    const movies   = parseVOD(moviesRaw, 'movies');
-    const series   = parseVOD(seriesRaw, 'series');
+    const movies   = await parseVODItems(moviesRaw, cleanUrl, formattedMac, token, 'movies');
+    const series   = await parseVODItems(seriesRaw, cleanUrl, formattedMac, token, 'series');
 
-    // Store parsed data in Supabase
+    // Generate M3U
+    const m3uContent = generateM3U(channels, movies, series);
+
+    // Store summary counts in Supabase
     const supabase = createClient(supabaseUrl, supabaseKey);
-
     await supabase.from('conversions').insert({
       user_session_id: effectiveSessionId,
       portal_url: portalUrl,
       mac_address: macAddress,
-      channels_data: channels,
-      movies_data: movies,
-      series_data: series,
       channel_count: channels.length,
       movie_count: movies.length,
       series_count: series.length,
     });
 
-    // Return both parsed counts and raw JSON
     return new Response(JSON.stringify({
-  success: true,
-  sessionId: effectiveSessionId,
-  channelCount: channels.length,
-  movieCount: movies.length,
-  seriesCount: series.length,
-  totalCount: channels.length + movies.length + series.length,
-  m3uContent: generateM3U(channels, movies, series),
-  rawResponses: {
-    live: channelsRaw,        // <--- include raw JSON here
-    vodMovies: moviesRaw,     // raw VOD movies JSON
-    vodSeries: seriesRaw      // raw VOD series JSON
-  }
-}), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      success: true,
+      sessionId: effectiveSessionId,
+      channelCount: channels.length,
+      movieCount: movies.length,
+      seriesCount: series.length,
+      totalCount: channels.length + movies.length + series.length,
+      m3uContent,
+      rawResponses: {
+        live: channelsRaw,
+        vodMovies: moviesRaw,
+        vodSeries: seriesRaw
+      }
+    }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+
   } catch (error) {
     console.error("Error:", error);
-    return new Response(JSON.stringify({
-      success: false,
-      error: error instanceof Error ? error.message : "An unknown error occurred",
-    }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : "Unknown error" }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
 });
 
-
-      
+// --- Helper functions ---
 
 async function handshake(portalUrl: string, macAddress: string): Promise<string> {
   const url = `${portalUrl}/portal.php?type=stb&action=handshake&token=&JsHttpRequest=1-xml`;
-
   const response = await fetch(url, {
-    method: "GET",
     headers: {
       "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3",
       "X-User-Agent": "Model: MAG250; Link: WiFi",
       "Cookie": `mac=${macAddress.replace(/:/g, '%3A')}; stb_lang=en; timezone=Europe/London`,
     },
   });
-
   if (!response.ok) throw new Error(`Handshake failed: ${response.statusText}`);
   const data = await response.json();
-  if (data.js && data.js.token) return data.js.token;
+  if (data.js?.token) return data.js.token;
   throw new Error("Failed to get token from handshake");
 }
 
 async function getChannelsRaw(portalUrl: string, macAddress: string, token: string): Promise<any> {
   const url = `${portalUrl}/portal.php?type=itv&action=get_all_channels&JsHttpRequest=1-xml`;
-
   const response = await fetch(url, {
-    method: "GET",
     headers: {
       "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3",
       "X-User-Agent": "Model: MAG250; Link: WiFi",
@@ -139,9 +125,39 @@ async function getChannelsRaw(portalUrl: string, macAddress: string, token: stri
       "Cookie": `mac=${macAddress.replace(/:/g, '%3A')}; stb_lang=en; timezone=Europe/London`,
     },
   });
-
   if (!response.ok) throw new Error(`Failed to get channels: ${response.statusText}`);
   return await response.json();
+}
+
+async function getVODOrderedList(portalUrl: string, macAddress: string, token: string, type: 'vod' | 'series', page: number = 1): Promise<any> {
+  const url = `${portalUrl}/portal.php?type=${type}&action=get_ordered_list&movie_id=0&season_id=0&episode_id=0&category=*&fav=0&sortby=added&hd=0&not_ended=0&p=${page}&JsHttpRequest=1-xml`;
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3",
+      "X-User-Agent": "Model: MAG250; Link: WiFi",
+      "Authorization": `Bearer ${token}`,
+      "Cookie": `mac=${macAddress.replace(/:/g, '%3A')}; stb_lang=en; timezone=Europe/London`,
+    },
+  });
+  if (!response.ok) throw new Error(`Failed to get ${type} list: ${response.statusText}`);
+  return await response.json();
+}
+
+async function getStreamLink(portalUrl: string, macAddress: string, token: string, cmd: string, type: 'movies' | 'series'): Promise<string> {
+  const portalType = 'vod'; // both movies and series resolve via vod
+  const seriesFlag = type === 'series' ? '&series=1' : '';
+  const url = `${portalUrl}/portal.php?type=${portalType}&action=create_link&cmd=${encodeURIComponent(cmd)}${seriesFlag}&JsHttpRequest=1-xml`;
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3",
+      "X-User-Agent": "Model: MAG250; Link: WiFi",
+      "Authorization": `Bearer ${token}`,
+      "Cookie": `mac=${macAddress.replace(/:/g, '%3A')}; stb_lang=en; timezone=Europe/London`,
+    },
+  });
+  if (!response.ok) return '';
+  const data = await response.json();
+  return data.js?.cmd || '';
 }
 
 function parseChannels(data: any): Channel[] {
@@ -154,141 +170,33 @@ function parseChannels(data: any): Channel[] {
     group: 'Live TV',
   })) || [];
 }
-
-async function getVODRaw(portalUrl: string, macAddress: string, token: string, type: 'movies' | 'series'): Promise<any> {
-  const vodCategories = await getVODCategories(portalUrl, macAddress, token, type);
-  const allVOD: VODItem[] = [];
-  const rawResponses: any[] = [];
-
-  for (const category of vodCategories) {
-    if (type === 'movies') {
-      const items = await getVODItems(portalUrl, macAddress, token, category.id, category.name, type);
-      allVOD.push(...items);
-    } else {
-      const episodes = await getSeriesEpisodes(portalUrl, macAddress, token, category.id, category.name);
-      allVOD.push(...episodes);
-    }
-  }
-
-  return {
-    categories: vodCategories,
-    items: allVOD,
-  };
-}
-
-function parseVOD(data: any, type: 'movies' | 'series'): VODItem[] {
-  return data.items || [];
-}
-
-async function getVOD(portalUrl: string, macAddress: string, token: string, type: 'movies' | 'series'): Promise<VODItem[]> {
-  const vodCategories = await getVODCategories(portalUrl, macAddress, token, type);
-  const allVOD: VODItem[] = [];
-
-  for (const category of vodCategories) {
-    if (type === 'movies') {
-      const items = await getVODItems(portalUrl, macAddress, token, category.id, category.name, type);
-      allVOD.push(...items);
-    } else {
-      const episodes = await getSeriesEpisodes(portalUrl, macAddress, token, category.id, category.name);
-      allVOD.push(...episodes);
-    }
-  }
-
-  return allVOD;
-}
-
-async function getVODCategories(portalUrl: string, macAddress: string, token: string, type: 'movies' | 'series'): Promise<Array<{ id: string; name: string }>> {
-  const portalType = type === 'movies' ? 'vod' : 'series';
-  const url = `${portalUrl}/portal.php?type=${portalType}&action=get_categories&JsHttpRequest=1-xml`;
-
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3",
-      "X-User-Agent": "Model: MAG250; Link: WiFi",
-      "Authorization": `Bearer ${token}`,
-      "Cookie": `mac=${macAddress.replace(/:/g, '%3A')}; stb_lang=en; timezone=Europe/London`,
-    },
-  });
-
-  if (!response.ok) return [];
-  const data = await response.json();
-
-  return data.js?.data?.map((cat: any) => ({
-    id: cat.id || '',
-    name: cat.title || cat.name || 'Unknown',
-  })) || [];
-}
-
-async function getStreamLink(portalUrl: string, macAddress: string, token: string, cmd: string, type: 'movies' | 'series'): Promise<string> {
-  const portalType = 'vod'; // both movies and series resolve via vod
-  const seriesFlag = type === 'series' ? '&series=1' : '';
-  const url = `${portalUrl}/portal.php?type=${portalType}&action=create_link&cmd=${encodeURIComponent(cmd)}${seriesFlag}&JsHttpRequest=1-xml`;
-
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3",
-      "X-User-Agent": "Model: MAG250; Link: WiFi",
-      "Authorization": `Bearer ${token}`,
-      "Cookie": `mac=${macAddress.replace(/:/g, '%3A')}; stb_lang=en; timezone=Europe/London`,
-    },
-  });
-
-  if (!response.ok) return '';
-  const data = await response.json();
-  return data.js?.cmd || '';
-}
-async function getVODItems(
+async function parseVODItems(
+  raw: any,
   portalUrl: string,
   macAddress: string,
   token: string,
-  categoryId: string,
-  categoryName: string,
   type: 'movies' | 'series'
 ): Promise<VODItem[]> {
-  const portalType = type === 'movies' ? 'vod' : 'series';
-  const allVOD: VODItem[] = [];
-  let page = 1;
+  const items: VODItem[] = [];
+  const data = raw.js?.data || [];
 
-  while (true) {
-    const url = `${portalUrl}/portal.php?type=${portalType}&action=get_ordered_list&movie_id=${categoryId}:${categoryId}&season_id=0&episode_id=0&category=${categoryId}&fav=0&sortby=added&hd=0&not_ended=0&p=${page}&JsHttpRequest=1-xml`;
+  for (const item of data) {
+    if (!item.cmd) continue;
 
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3",
-        "X-User-Agent": "Model: MAG250; Link: WiFi",
-        "Authorization": `Bearer ${token}`,
-        "Cookie": `mac=${macAddress.replace(/:/g, '%3A')}; stb_lang=en; timezone=Europe/London`,
-      },
+    // Resolve actual stream link
+    const streamUrl = await getStreamLink(portalUrl, macAddress, token, item.cmd, type);
+    if (!streamUrl) continue;
+
+    items.push({
+      id: item.id || '',
+      name: item.name || item.o_name || 'Unknown',
+      cmd: streamUrl,
+      poster: item.screenshot_uri || item.pic || '',
+      group: type === 'movies' ? 'Movies' : 'Series',
     });
-
-    if (!response.ok) break;
-    const data = await response.json();
-    const items = data.js?.data || [];
-    if (items.length === 0) break;
-
-    for (const item of items) {
-      if (!item.cmd) continue;
-
-      // Resolve actual stream link
-      const streamUrl = await getStreamLink(portalUrl, macAddress, token, item.cmd, type);
-      if (!streamUrl) continue;
-
-      allVOD.push({
-        id: item.id || '',
-        name: item.name || item.title || 'Unknown',
-        cmd: streamUrl,
-        poster: item.poster_url || item.poster || '',
-        group: `${type === 'movies' ? 'Movies' : 'Series'} – ${categoryName}`,
-      });
-    }
-
-    page++;
   }
 
-  return allVOD;
+  return items;
 }
 
 function generateM3U(channels: Channel[], movies: VODItem[], series: VODItem[]): string {
