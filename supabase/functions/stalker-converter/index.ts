@@ -1,4 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -9,6 +10,7 @@ const corsHeaders = {
 interface StalkerRequest {
   portalUrl: string;
   macAddress: string;
+  sessionId: string;
 }
 
 interface Channel {
@@ -28,18 +30,21 @@ interface VODItem {
   group: string;
 }
 
+const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
+const supabaseKey = Deno.env.get("SUPABASE_ANON_KEY") || "";
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 200, headers: corsHeaders });
   }
 
   try {
-    const { portalUrl, macAddress }: StalkerRequest = await req.json();
+    const { portalUrl, macAddress, sessionId }: StalkerRequest = await req.json();
 
-    if (!portalUrl || !macAddress) {
+    if (!portalUrl || !macAddress || !sessionId) {
       return new Response(JSON.stringify({
         success: false,
-        error: "Portal URL and MAC address are required",
+        error: "Portal URL, MAC address, and session ID are required",
       }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
@@ -57,20 +62,28 @@ Deno.serve(async (req: Request) => {
     const movies = parseVOD(moviesData, 'movies');
     const series = parseVOD(seriesData, 'series');
 
-    const m3uContent = generateM3U(channels, movies, series);
+    // Store in Supabase
+    const supabase = createClient(supabaseUrl, supabaseKey);
+
+    await supabase.from('conversions').upsert({
+      user_session_id: sessionId,
+      portal_url: portalUrl,
+      mac_address: macAddress,
+      channels_data: channels,
+      movies_data: movies,
+      series_data: series,
+      channel_count: channels.length,
+      movie_count: movies.length,
+      series_count: series.length,
+    }, { onConflict: 'user_session_id' });
 
     return new Response(JSON.stringify({
       success: true,
-      m3uContent,
+      sessionId,
       channelCount: channels.length,
       movieCount: movies.length,
       seriesCount: series.length,
       totalCount: channels.length + movies.length + series.length,
-      debug: {
-        channelsResponse: channelsData,
-        moviesResponse: moviesData,
-        seriesResponse: seriesData,
-      },
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
   } catch (error) {

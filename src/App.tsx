@@ -1,19 +1,42 @@
-import { useState } from 'react';
-import { Download, Tv, Loader2, CheckCircle, XCircle } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Download, Tv, Loader2, CheckCircle, XCircle, Eye } from 'lucide-react';
+import { createClient } from '@supabase/supabase-js';
 
 interface FormData {
   portalUrl: string;
   macAddress: string;
 }
 
+interface Channel {
+  id: string;
+  name: string;
+  cmd: string;
+  logo?: string;
+  group: string;
+}
+
+interface VODItem {
+  id: string;
+  name: string;
+  cmd: string;
+  poster?: string;
+  group: string;
+}
+
 interface ConversionResult {
   success: boolean;
-  m3uContent?: string;
+  sessionId?: string;
   channelCount?: number;
   movieCount?: number;
   seriesCount?: number;
   totalCount?: number;
   error?: string;
+}
+
+interface StoredData {
+  channels: Channel[];
+  movies: VODItem[];
+  series: VODItem[];
 }
 
 function App() {
@@ -23,8 +46,15 @@ function App() {
   });
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ConversionResult | null>(null);
-  const [activeTab, setActiveTab] = useState<'live' | 'movies' | 'series' | 'all'>('all');
-  const [debugInfo, setDebugInfo] = useState<any>(null);
+  const [storedData, setStoredData] = useState<StoredData | null>(null);
+  const [sessionId] = useState(() => `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
+  const [activeTab, setActiveTab] = useState<'channels' | 'movies' | 'series'>('channels');
+  const [showModal, setShowModal] = useState(false);
+
+  const supabase = createClient(
+    import.meta.env.VITE_SUPABASE_URL,
+    import.meta.env.VITE_SUPABASE_ANON_KEY
+  );
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFormData({
@@ -47,18 +77,16 @@ function App() {
             'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify(formData),
+          body: JSON.stringify({ ...formData, sessionId }),
         }
       );
 
       const data = await response.json();
-      console.log('Full response:', data);
-      setDebugInfo(data);
 
       if (response.ok && data.success) {
         setResult({
           success: true,
-          m3uContent: data.m3uContent,
+          sessionId: data.sessionId,
           channelCount: data.channelCount,
           movieCount: data.movieCount,
           seriesCount: data.seriesCount,
@@ -80,14 +108,61 @@ function App() {
     }
   };
 
-  const handleDownload = () => {
-    if (!result?.m3uContent) return;
+  const loadStoredData = async () => {
+    if (!result?.sessionId) return;
 
-    const blob = new Blob([result.m3uContent], { type: 'text/plain' });
+    try {
+      const { data, error } = await supabase
+        .from('conversions')
+        .select('channels_data, movies_data, series_data')
+        .eq('user_session_id', result.sessionId)
+        .maybeSingle();
+
+      if (error) throw error;
+
+      if (data) {
+        setStoredData({
+          channels: data.channels_data || [],
+          movies: data.movies_data || [],
+          series: data.series_data || [],
+        });
+        setShowModal(true);
+        setActiveTab('channels');
+      }
+    } catch (error) {
+      console.error('Error loading data:', error);
+    }
+  };
+
+  const generateM3U = (type: 'channels' | 'movies' | 'series') => {
+    if (!storedData) return '';
+
+    let m3u = '#EXTM3U\n';
+    const items = type === 'channels' ? storedData.channels : type === 'movies' ? storedData.movies : storedData.series;
+
+    for (const item of items) {
+      const tvgLogo = item.logo || item.poster ? ` tvg-logo="${item.logo || item.poster}"` : '';
+      const tvgId = item.id ? ` tvg-id="${item.id}"` : '';
+      const groupTitle = item.group ? ` group-title="${item.group}"` : '';
+
+      m3u += `#EXTINF:-1${tvgId}${tvgLogo}${groupTitle},${item.name}\n`;
+      let streamUrl = item.cmd;
+      if (streamUrl && !streamUrl.startsWith('http')) {
+        streamUrl = streamUrl.replace(/^(ffmpeg|ffrt|ffrt2k) /, '');
+      }
+      m3u += `${streamUrl}\n`;
+    }
+
+    return m3u;
+  };
+
+  const handleDownload = (type: 'channels' | 'movies' | 'series') => {
+    const m3uContent = generateM3U(type);
+    const blob = new Blob([m3uContent], { type: 'text/plain' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'playlist.m3u';
+    a.download = `playlist_${type}.m3u`;
     document.body.appendChild(a);
     a.click();
     window.URL.revokeObjectURL(url);
@@ -217,11 +292,11 @@ function App() {
                       </div>
                     </div>
                     <button
-                      onClick={handleDownload}
+                      onClick={loadStoredData}
                       className="bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-6 rounded-xl transition-all inline-flex items-center gap-2 shadow-md hover:shadow-lg"
                     >
-                      <Download className="w-5 h-5" />
-                      Download M3U File
+                      <Eye className="w-5 h-5" />
+                      View Results
                     </button>
                   </>
                 ) : (
@@ -237,11 +312,75 @@ function App() {
           </div>
         )}
 
-        {debugInfo && (
-          <div className="mt-8 bg-gray-900 rounded-2xl shadow-lg p-6">
-            <h2 className="text-xl font-bold text-white mb-4">Debug Info</h2>
-            <div className="bg-gray-800 rounded-lg p-4 text-gray-100 text-sm font-mono overflow-auto max-h-96">
-              <pre>{JSON.stringify(debugInfo, null, 2)}</pre>
+        {showModal && storedData && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+            <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+              <div className="flex items-center justify-between p-6 border-b border-gray-200">
+                <h2 className="text-2xl font-bold text-gray-900">Results</h2>
+                <button
+                  onClick={() => setShowModal(false)}
+                  className="text-gray-500 hover:text-gray-700 text-2xl"
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="flex border-b border-gray-200">
+                {['channels', 'movies', 'series'].map((tab) => (
+                  <button
+                    key={tab}
+                    onClick={() => setActiveTab(tab as any)}
+                    className={`flex-1 py-4 font-semibold transition-all ${
+                      activeTab === tab
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
+                    }`}
+                  >
+                    {tab === 'channels' ? `Live Channels (${storedData.channels.length})` : ''}
+                    {tab === 'movies' ? `Movies (${storedData.movies.length})` : ''}
+                    {tab === 'series' ? `Series (${storedData.series.length})` : ''}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-6">
+                <div className="space-y-2">
+                  {(activeTab === 'channels' ? storedData.channels : activeTab === 'movies' ? storedData.movies : storedData.series).map((item, idx) => (
+                    <div key={idx} className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-all">
+                      {(item.logo || item.poster) && (
+                        <img
+                          src={item.logo || item.poster}
+                          alt={item.name}
+                          className="w-12 h-12 rounded object-cover flex-shrink-0"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                          }}
+                        />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className="font-semibold text-gray-900 truncate">{item.name}</p>
+                        <p className="text-sm text-gray-600 truncate">{item.group}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex gap-3 p-6 border-t border-gray-200 bg-gray-50">
+                <button
+                  onClick={() => handleDownload(activeTab)}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-xl transition-all inline-flex items-center justify-center gap-2 shadow-md hover:shadow-lg"
+                >
+                  <Download className="w-5 h-5" />
+                  Download {activeTab === 'channels' ? 'Channels' : activeTab === 'movies' ? 'Movies' : 'Series'} M3U
+                </button>
+                <button
+                  onClick={() => setShowModal(false)}
+                  className="px-6 py-3 bg-gray-200 hover:bg-gray-300 text-gray-900 font-semibold rounded-xl transition-all"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -256,8 +395,7 @@ function App() {
                 1
               </span>
               <p>
-                Enter your Stalker Portal URL. This is provided by your IPTV
-                service provider and typically ends with <code className="bg-gray-100 px-2 py-1 rounded">/c/</code>
+                Enter your Stalker Portal URL and MAC address
               </p>
             </div>
             <div className="flex gap-4">
@@ -265,8 +403,7 @@ function App() {
                 2
               </span>
               <p>
-                Enter your MAC address. This is the unique identifier for your device,
-                usually in the format XX:XX:XX:XX:XX:XX
+                Click "Convert to M3U" and wait for the conversion to complete
               </p>
             </div>
             <div className="flex gap-4">
@@ -274,7 +411,7 @@ function App() {
                 3
               </span>
               <p>
-                Click "Convert to M3U" and wait for the conversion to complete
+                Click "View Results" to see all live channels, movies, and series
               </p>
             </div>
             <div className="flex gap-4">
@@ -282,7 +419,7 @@ function App() {
                 4
               </span>
               <p>
-                Download your M3U file and use it with any compatible IPTV player
+                Download individual M3U files for each category
               </p>
             </div>
           </div>
