@@ -322,8 +322,11 @@
     }
   </style>
 </head>
+
+
 <body>
   <div class="container">
+    <!-- Header -->
     <div class="header">
       <div class="header-icon">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -335,35 +338,23 @@
       <p class="subtitle">Convert your Stalker Portal playlist to standard M3U format</p>
     </div>
 
+    <!-- Converter Form -->
     <div class="card">
       <form id="converterForm">
         <div class="form-group">
           <label for="portalUrl">Portal URL</label>
-          <input
-            type="url"
-            id="portalUrl"
-            name="portalUrl"
-            placeholder="http://example.com/stalker_portal/c/"
-            required
-          />
+          <input type="url" id="portalUrl" name="portalUrl" placeholder="http://example.com/stalker_portal/c/" required />
           <p class="help-text">Enter your Stalker Portal URL (usually ends with /c/)</p>
         </div>
 
         <div class="form-group">
           <label for="macAddress">MAC Address</label>
-          <input
-            type="text"
-            id="macAddress"
-            name="macAddress"
-            placeholder="00:1A:79:XX:XX:XX"
-            pattern="[0-9A-Fa-f:]{17}"
-            required
-          />
+          <input type="text" id="macAddress" name="macAddress" placeholder="00:1A:79:XX:XX:XX" pattern="[0-9A-Fa-f:]{17}" required />
           <p class="help-text">Enter your device MAC address (format: XX:XX:XX:XX:XX:XX)</p>
         </div>
 
         <button type="submit" id="submitBtn">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 20px; height: 20px;">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2" style="width:20px;height:20px;">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
             <polyline points="7 10 12 15 17 10"></polyline>
             <line x1="12" y1="15" x2="12" y2="3"></line>
@@ -373,39 +364,36 @@
       </form>
     </div>
 
+    <!-- Conversion Result -->
     <div id="result" class="result hidden"></div>
 
+    <!-- Debug Section -->
     <div id="debugSection" class="debug-section hidden">
       <h2>Debug Info</h2>
-      <div class="debug-content" id="debugContent"></div>
+      <div class="debug-buttons">
+        <button onclick="showRaw('live')">Show Live Channels JSON</button>
+        <button onclick="showRaw('vodMovies')">Show VOD Movies JSON</button>
+        <button onclick="showRaw('vodSeries')">Show VOD Series JSON</button>
+        <button onclick="showRaw('full')">Show Full Response</button>
+      </div>
+      <pre class="debug-content" id="debugContent">Click a button to view raw JSON...</pre>
     </div>
 
+    <!-- Info Section -->
     <div class="info-section">
       <h2>How to Use</h2>
       <div class="steps">
-        <div class="step">
-          <span class="step-number">1</span>
-          <p>Enter your Stalker Portal URL. This is provided by your IPTV service provider and typically ends with <code>/c/</code></p>
-        </div>
-        <div class="step">
-          <span class="step-number">2</span>
-          <p>Enter your MAC address. This is the unique identifier for your device, usually in the format XX:XX:XX:XX:XX:XX</p>
-        </div>
-        <div class="step">
-          <span class="step-number">3</span>
-          <p>Click "Convert to M3U" and wait for the conversion to complete</p>
-        </div>
-        <div class="step">
-          <span class="step-number">4</span>
-          <p>Download your M3U file and use it with any compatible IPTV player</p>
-        </div>
+        <div class="step"><span class="step-number">1</span><p>Enter your Stalker Portal URL (usually ends with <code>/c/</code>).</p></div>
+        <div class="step"><span class="step-number">2</span><p>Enter your MAC address in format XX:XX:XX:XX:XX:XX.</p></div>
+        <div class="step"><span class="step-number">3</span><p>Click "Convert to M3U" and wait for conversion.</p></div>
+        <div class="step"><span class="step-number">4</span><p>Download your M3U file and use it with any IPTV player.</p></div>
       </div>
     </div>
   </div>
 
   <script>
     const SUPABASE_URL = 'https://tkukonbgongorhbltnlf.supabase.co';
-    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRrdWtvbmJnb25nb3JoYmx0bmxmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkyODMzMTUsImV4cCI6MjA4NDg1OTMxNX0.pn8HrqoV3Vulg_iFycvsSiC_XXO7Svtn4Vcgb172VWE';
+    const SUPABASE_KEY = 'YOUR_SUPABASE_ANON_KEY';
 
     const form = document.getElementById('converterForm');
     const submitBtn = document.getElementById('submitBtn');
@@ -414,9 +402,11 @@
     const debugSection = document.getElementById('debugSection');
     const debugContent = document.getElementById('debugContent');
 
+    let rawResponses = {};
+    let fullResponse = {};
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-
       const portalUrl = document.getElementById('portalUrl').value;
       const macAddress = document.getElementById('macAddress').value;
 
@@ -436,10 +426,11 @@
         });
 
         const data = await response.json();
-        console.log('Full response:', data);
+        fullResponse = data;
+        rawResponses = data.rawResponses || {};
 
-        debugContent.textContent = JSON.stringify(data, null, 2);
         debugSection.classList.remove('hidden');
+        debugContent.textContent = 'Click a button to view raw JSON...';
 
         if (response.ok && data.success) {
           showSuccessResult(data);
@@ -451,7 +442,7 @@
       } finally {
         submitBtn.disabled = false;
         btnText.innerHTML = `
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 20px; height: 20px;">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2" style="width:20px;height:20px;">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
             <polyline points="7 10 12 15 17 10"></polyline>
             <line x1="12" y1="15" x2="12" y2="3"></line>
@@ -461,43 +452,28 @@
       }
     });
 
+    function showRaw(type) {
+      let content;
+      if (type === 'full') {
+        content = fullResponse;
+      } else {
+        content = rawResponses[type];
+      }
+      debugContent.textContent = content ? JSON.stringify(content, null, 2) : `No raw response available for ${type}`;
+    }
+
     function showSuccessResult(data) {
       resultDiv.className = 'result result-success';
       resultDiv.innerHTML = `
         <div class="result-content">
-          <svg class="result-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-            <polyline points="22 4 12 14.01 9 11.01"></polyline>
-          </svg>
-          <div>
-            <h3>Conversion Successful!</h3>
-            <div class="stats-grid">
-              <div class="stat-box">
-                <div class="stat-value">${data.channelCount}</div>
-                <div class="stat-label">Live Channels</div>
-              </div>
-              <div class="stat-box">
-                <div class="stat-value">${data.movieCount}</div>
-                <div class="stat-label">Movies</div>
-              </div>
-              <div class="stat-box">
-                <div class="stat-value">${data.seriesCount}</div>
-                <div class="stat-label">Series</div>
-              </div>
-              <div class="stat-box">
-                <div class="stat-value">${data.totalCount}</div>
-                <div class="stat-label">Total Items</div>
-              </div>
-            </div>
-            <button class="btn-download" onclick="downloadM3U('${encodeURIComponent(data.m3uContent)}')">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 20px; height: 20px;">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                <polyline points="7 10 12 15 17 10"></polyline>
-                <line x1="12" y1="15" x2="12" y2="3"></line>
-              </svg>
-              Download M3U File
-            </button>
+          <h3>Conversion Successful!</h3>
+          <div class="stats-grid">
+            <div class="stat-box"><div class="stat-value">${data.channelCount}</div><div class="stat-label">Live Channels</div></div>
+            <div class="stat-box"><div class="stat-value">${data.movieCount}</div><div class="stat-label">Movies</div></div>
+            <div class="stat-box"><div class="stat-value">${data.seriesCount}</div><div class="stat-label">Series</div></div>
+            <div class="stat-box"><div class="stat-value">${data.totalCount}</div><div class="stat-label">Total Items</div></div>
           </div>
+          <button class="btn-download" onclick="downloadM3U('${encodeURIComponent(data.m3uContent || '')}')">Download M3U File</button>
         </div>
       `;
       resultDiv.classList.remove('hidden');
@@ -505,19 +481,7 @@
 
     function showErrorResult(error) {
       resultDiv.className = 'result result-error';
-      resultDiv.innerHTML = `
-        <div class="result-content">
-          <svg class="result-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"></circle>
-            <line x1="15" y1="9" x2="9" y2="15"></line>
-            <line x1="9" y1="9" x2="15" y2="15"></line>
-          </svg>
-          <div>
-            <h3>Conversion Failed</h3>
-            <p>${error}</p>
-          </div>
-        </div>
-      `;
+      resultDiv.innerHTML = `<div class="result-content"><h3>Conversion Failed</h3><p>${error}</p></div>`;
       resultDiv.classList.remove('hidden');
     }
 
@@ -534,6 +498,9 @@
       document.body.removeChild(a);
     }
   </script>
+        
+
+  
   <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
 <script>eruda.init();</script>
 </body>
