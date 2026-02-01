@@ -78,7 +78,7 @@ Deno.serve(async (req: Request) => {
       channel_count: channels.length,
       movie_count: movies.length,
       series_count: series.length,
-    }, { onConflict: 'user_session_id' });
+    });
 
     return new Response(JSON.stringify({
       success: true,
