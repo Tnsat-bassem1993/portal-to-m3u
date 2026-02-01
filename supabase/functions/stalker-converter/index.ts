@@ -10,7 +10,7 @@ const corsHeaders = {
 interface StalkerRequest {
   portalUrl: string;
   macAddress: string;
-  sessionId: string;
+  sessionId?: string; // now optional
 }
 
 interface Channel {
@@ -41,12 +41,15 @@ Deno.serve(async (req: Request) => {
   try {
     const { portalUrl, macAddress, sessionId }: StalkerRequest = await req.json();
 
-    if (!portalUrl || !macAddress || !sessionId) {
+    if (!portalUrl || !macAddress) {
       return new Response(JSON.stringify({
         success: false,
-        error: "Portal URL, MAC address, and session ID are required",
+        error: "Portal URL and MAC address are required",
       }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
+
+    // If no sessionId provided, generate one automatically
+    const effectiveSessionId = sessionId || crypto.randomUUID();
 
     const cleanUrl = portalUrl.trim().replace(/\/+$/, '');
     const cleanMac = macAddress.toUpperCase().replace(/[:-]/g, '');
@@ -66,7 +69,7 @@ Deno.serve(async (req: Request) => {
     const supabase = createClient(supabaseUrl, supabaseKey);
 
     await supabase.from('conversions').upsert({
-      user_session_id: sessionId,
+      user_session_id: effectiveSessionId,
       portal_url: portalUrl,
       mac_address: macAddress,
       channels_data: channels,
@@ -79,7 +82,7 @@ Deno.serve(async (req: Request) => {
 
     return new Response(JSON.stringify({
       success: true,
-      sessionId,
+      sessionId: effectiveSessionId,
       channelCount: channels.length,
       movieCount: movies.length,
       seriesCount: series.length,
@@ -94,6 +97,8 @@ Deno.serve(async (req: Request) => {
     }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
 });
+
+      
 
 async function handshake(portalUrl: string, macAddress: string): Promise<string> {
   const url = `${portalUrl}/portal.php?type=stb&action=handshake&token=&JsHttpRequest=1-xml`;
