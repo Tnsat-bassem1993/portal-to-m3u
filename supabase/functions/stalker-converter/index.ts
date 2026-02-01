@@ -84,19 +84,19 @@ Deno.serve(async (req: Request) => {
 
     // Return both parsed counts and raw JSON
     return new Response(JSON.stringify({
-      success: true,
-      sessionId: effectiveSessionId,
-      channelCount: channels.length,
-      movieCount: movies.length,
-      seriesCount: series.length,
-      totalCount: channels.length + movies.length + series.length,
-      rawResponses: {
-        live: channelsRaw,
-        vodMovies: moviesRaw,
-        vodSeries: seriesRaw
-      }
-    }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-
+  success: true,
+  sessionId: effectiveSessionId,
+  channelCount: channels.length,
+  movieCount: movies.length,
+  seriesCount: series.length,
+  totalCount: channels.length + movies.length + series.length,
+  m3uContent: generateM3U(channels, movies, series),
+  rawResponses: {
+    live: channelsRaw,        // <--- include raw JSON here
+    vodMovies: moviesRaw,     // raw VOD movies JSON
+    vodSeries: seriesRaw      // raw VOD series JSON
+  }
+}), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (error) {
     console.error("Error:", error);
     return new Response(JSON.stringify({
